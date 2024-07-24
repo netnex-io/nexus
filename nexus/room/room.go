@@ -54,8 +54,6 @@ func NewRoom(id string, roomType string) *Room {
 func (r *Room) run() {
 	for msg := range r.messages {
 		switch m := msg.(type) {
-		// case *messages.NewConnection:
-		// r.AddConnection(m.Connection)
 		case *messages.ConnectionMessage:
 			r.handleConnectionMessage(m.ConnectionId, m.Message)
 		case *messages.Disconnect:
@@ -144,7 +142,12 @@ func (r *Room) handleConnectionMessage(connectionId string, message []byte) {
 		return
 	}
 
-	r.pubsub.Publish(eventName, event["data"])
+	switch eventName {
+	case "nexus:room-leave":
+		r.Disconnect(connectionId)
+	default:
+		r.pubsub.Publish(eventName, event["data"])
+	}
 }
 
 func (r *Room) Disconnect(connectionId string) {
