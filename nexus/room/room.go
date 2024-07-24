@@ -14,7 +14,7 @@ type Room struct {
 	Id          string
 	RoomType    string
 	Connections map[string]*Connection
-	Mutex       sync.Mutex
+	mutex       sync.Mutex
 
 	// Messages is in charge of direct bidirectional communication, handling connection managers when a client joins/leaves the room
 	messages chan RoomMessage
@@ -71,9 +71,9 @@ func (r *Room) AddConnection(conn *websocket.Conn, connectionId string) {
 		pubsub:     pubsub.NewPubSub(),
 	}
 
-	r.Mutex.Lock()
+	r.mutex.Lock()
 	r.Connections[connectionId] = connection
-	r.Mutex.Unlock()
+	r.mutex.Unlock()
 
 	go r.readMessages(connection)
 	go r.writeMessages(connection)
@@ -116,9 +116,9 @@ func (r *Room) writeMessages(c *Connection) {
 }
 
 func (r *Room) handleConnectionMessage(connectionId string, message []byte) {
-	r.Mutex.Lock()
+	r.mutex.Lock()
 	connection, ok := r.Connections[connectionId]
-	r.Mutex.Unlock()
+	r.mutex.Unlock()
 	if !ok {
 		return
 	}
@@ -151,13 +151,13 @@ func (r *Room) handleConnectionMessage(connectionId string, message []byte) {
 }
 
 func (r *Room) Disconnect(connectionId string) {
-	r.Mutex.Lock()
+	r.mutex.Lock()
 	connection, ok := r.Connections[connectionId]
 	if ok {
 		delete(r.Connections, connectionId)
 		close(connection.send)
 	}
-	r.Mutex.Unlock()
+	r.mutex.Unlock()
 
 	if ok && r.OnLeave != nil {
 		r.OnLeave(connection)
@@ -169,8 +169,8 @@ func (r *Room) On(event string, handler pubsub.EventHandler) {
 }
 
 func (r *Room) Emit(event string, payload interface{}) {
-	r.Mutex.Lock()
-	defer r.Mutex.Unlock()
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
 
 	message := map[string]interface{}{
 		"event": event,
@@ -188,9 +188,9 @@ func (r *Room) Emit(event string, payload interface{}) {
 }
 
 func (r *Room) EmitTo(connectionId string, event string, payload interface{}) {
-	r.Mutex.Lock()
+	r.mutex.Lock()
 	conn, ok := r.Connections[connectionId]
-	r.Mutex.Unlock()
+	r.mutex.Unlock()
 
 	if !ok {
 		return
