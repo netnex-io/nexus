@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"github.com/netnex-io/nexus/matchmaker"
@@ -33,32 +34,69 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, message, err := conn.ReadMessage()
-	if err != nil {
-		log.Println("Failed to read message:", err)
+	// Generate a unique connection ID for this connection
+	connectionId := uuid.New().String()
+
+	// Send the connection ID to the client
+	s.handleConnectionEstablishedMessage(conn, connectionId)
+
+	// Handle disconnect & clean-up
+	defer func() {
+		log.Printf("Connection closed for ID: %s\n", connectionId)
+		s.Matchmaker.RemoveConnection(connectionId)
 		conn.Close()
+	}()
+
+	// Handle messages after sending the connection ID
+	for {
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				log.Printf("Connection closed normally for ID %s: %v\n", connectionId, err)
+			} else {
+				log.Printf("Unexpected error for ID %s: %v\n", connectionId, err)
+			}
+			return
+		}
+
+		var payload matchmaker.MatchmakerRequestPayload
+		err = json.Unmarshal(message, &payload)
+		if err != nil {
+			log.Printf("Failed to decode request payload for ID %s: %v\n:", connectionId, err)
+			return
+		}
+
+		switch payload.Action {
+		case "JoinOrCreate":
+			s.Matchmaker.JoinOrCreate(conn, connectionId, payload.RoomType)
+		case "Join":
+			s.Matchmaker.Join(conn, connectionId, payload.RoomId)
+		case "Create":
+			s.Matchmaker.Create(conn, connectionId, payload.RoomType)
+		default:
+			log.Println("Unknown Matchmaker Action:", payload.Action)
+			conn.Close()
+		}
+	}
+}
+
+func (s *Server) handleConnectionEstablishedMessage(conn *websocket.Conn, connectionId string) {
+	// Send the server-created connection id to the client
+	successMessage := map[string]interface{}{
+		"event":         "nexus:connection-established",
+		"connection_id": connectionId,
+	}
+	jsonMessage, err := json.Marshal(successMessage)
+
+	if err != nil {
+		log.Println("Failed to marshal connection established message:", err)
 		return
 	}
 
-	var payload matchmaker.MatchmakerRequestPayload
-	err = json.Unmarshal(message, &payload)
-	if err != nil {
-		log.Println("Failed to decode request payload:", err)
-		conn.Close()
-		return
+	if err := conn.WriteMessage(websocket.TextMessage, jsonMessage); err != nil {
+		log.Println("Failed to send connection established message:", err)
 	}
 
-	switch payload.Action {
-	case "JoinOrCreate":
-		s.Matchmaker.JoinOrCreate(conn, payload.RoomType)
-	case "Join":
-		s.Matchmaker.Join(conn, payload.RoomId)
-	case "Create":
-		s.Matchmaker.Create(conn, payload.RoomType)
-	default:
-		log.Println("Unknown Matchmaker Action:", payload.Action)
-		conn.Close()
-	}
 }
 
 func (s *Server) Start(addr string) {
