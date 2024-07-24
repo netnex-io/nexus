@@ -11,28 +11,64 @@ import (
 	"github.com/netnex-io/nexus/matchmaker"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
+type ServerConfig struct {
+	AllowedOrigins []string
+	MaxMessageSize int64
+	CertFile       string
+	KeyFile        string
+}
+
+func DefaultServerConfig() ServerConfig {
+	return ServerConfig{
+		// Allow all origins by default
+		AllowedOrigins: []string{"*"},
+		// Default max message size (1KB)
+		MaxMessageSize: 1024,
+		// Cert & Key Files
+		CertFile: "",
+		KeyFile:  "",
+	}
 }
 
 type Server struct {
+	// Room Matchmaker
 	Matchmaker *matchmaker.Matchmaker
+
+	// Config
+	Config ServerConfig
 }
 
-func NewServer() *Server {
+func NewServer(config ServerConfig) *Server {
 	return &Server{
 		Matchmaker: matchmaker.NewMatchmaker(),
+		Config:     config,
 	}
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			if len(s.Config.AllowedOrigins) == 0 || s.Config.AllowedOrigins[0] == "*" {
+				return true
+			}
+
+			origin := r.Header.Get("Origin")
+			for _, allowedOrigin := range s.Config.AllowedOrigins {
+				if origin == allowedOrigin {
+					return true
+				}
+			}
+
+			return false
+		},
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("failed to upgrade connection:", err)
 		return
 	}
+	conn.SetReadLimit(s.Config.MaxMessageSize)
 
 	// Generate a unique connection ID for this connection
 	connectionId := uuid.New().String()
@@ -104,5 +140,9 @@ func (s *Server) Start(addr string) {
 	r.HandleFunc("/ws", s.handleWebSocket).Methods("GET")
 
 	log.Printf("Server started on %s\n", addr)
-	log.Fatal(http.ListenAndServe(addr, r))
+	if s.Config.CertFile != "" && s.Config.KeyFile != "" {
+		log.Fatal(http.ListenAndServeTLS(addr, s.Config.CertFile, s.Config.KeyFile, r))
+	} else {
+		log.Fatal(http.ListenAndServe(addr, r))
+	}
 }
