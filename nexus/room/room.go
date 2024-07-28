@@ -1,3 +1,6 @@
+// The room package handles the management of a room within the server.
+// Each room manages multiple connections and messages from a base to application-logic level.
+
 package room
 
 import (
@@ -12,40 +15,45 @@ import (
 	"github.com/netnex-io/nexus/room/messages"
 )
 
+// Manages a single room instance, handling connections and message routing.
 type Room struct {
-	Id              string
-	RoomType        string
-	Connections     map[string]*Connection
-	ConnectionLimit int
-	AutoDispose     int // Auto dispose timeout in seconds, 0 for no timeout
-	LastActivity    time.Time
-	mutex           sync.Mutex
+	Id              string                 // Unique identifier for the room
+	RoomType        string                 // Type of the room, defined by the matchmaker's RoomType
+	Connections     map[string]*Connection // Active connections within the room
+	ConnectionLimit int                    // Maximum number of connections allowed to the room
+	AutoDispose     int                    // Auto dispose timeout in seconds, 0 for no timeout
+	LastActivity    time.Time              // Timestamp of the last activity in the room
+	mutex           sync.Mutex             // Mutex for synchronizing access to room data
 
 	// Messages is in charge of direct bidirectional communication, handling connection managers when a client joins/leaves the room
 	messages chan RoomMessage
 	// The pubsub is in charge of application logic (e.g room specific events, player movement, etc)
 	pubsub *pubsub.PubSub
 
-	OnJoin    func(c *Connection)
-	OnLeave   func(c *Connection)
-	OnMessage func(c *Connection, message []byte)
+	// Optional hooks for room events
+	OnJoin    func(c *Connection)                 // Called when a client joins the room
+	OnLeave   func(c *Connection)                 // Called when a client leaves the room
+	OnMessage func(c *Connection, message []byte) // Called when a client sends a message to the room
 
-	disposeChan chan struct{}
-	disposed    bool
+	disposeChan chan struct{} // Channel to signal room disposal
+	disposed    bool          // Flag indicating if the room has been disposed
 }
 
+// Represents a single client connection within a room. Wraps over the underlying websocket connection.
 type Connection struct {
-	Id         string
-	Connection *websocket.Conn
-	send       chan []byte
-	room       *Room
-	pubsub     *pubsub.PubSub
+	Id         string          // Unique identifier for the connection
+	Connection *websocket.Conn // Underlying websocket connection
+	send       chan []byte     // Channel for sending messages to the client
+	room       *Room           // Reference to the parent room
+	pubsub     *pubsub.PubSub  // PubSub instance for this connection
 }
 
+// Queues a message to be sent to the client through the websocket connection.
 func (c *Connection) Send(message []byte) {
 	c.send <- message
 }
 
+// Creates a new room instance with a unique identifer and type.
 func NewRoom(id string, roomType string) *Room {
 	r := &Room{
 		Id:           id,
@@ -57,10 +65,13 @@ func NewRoom(id string, roomType string) *Room {
 		disposeChan:  make(chan struct{}),
 	}
 
+	// Start the room's message handling loop
 	go r.run()
+
 	return r
 }
 
+// Main event loop for the room, handling incoming messages and disposal.
 func (r *Room) run() {
 	for {
 		select {
@@ -80,6 +91,7 @@ func (r *Room) run() {
 	}
 }
 
+// Adds a new connection to the room
 func (r *Room) AddConnection(conn *websocket.Conn, connectionId string) {
 	if r.ConnectionLimit > 0 && len(r.Connections) >= r.ConnectionLimit {
 		error.SendErrorResponse(conn, error.NewErrorResponse(error.RoomFull, "Room is full"))
@@ -107,6 +119,7 @@ func (r *Room) AddConnection(conn *websocket.Conn, connectionId string) {
 	}
 }
 
+// Reads messages from a client's websocket connection and processes them.
 func (r *Room) readMessages(c *Connection) {
 	defer func() {
 		r.messages <- messages.Disconnect{ConnectionId: c.Id}
@@ -125,6 +138,7 @@ func (r *Room) readMessages(c *Connection) {
 	}
 }
 
+// Sends messages to the client's websocket connection.
 func (r *Room) writeMessages(c *Connection) {
 	defer func() {
 		c.Connection.Close()
@@ -139,6 +153,7 @@ func (r *Room) writeMessages(c *Connection) {
 	}
 }
 
+// Processes a message from a client connection.
 func (r *Room) handleConnectionMessage(connectionId string, message []byte) {
 	r.mutex.Lock()
 	connection, ok := r.Connections[connectionId]
@@ -174,6 +189,7 @@ func (r *Room) handleConnectionMessage(connectionId string, message []byte) {
 	}
 }
 
+// Removes a connection from the room and performs any necessary cleanup.
 func (r *Room) Disconnect(connectionId string) {
 	r.mutex.Lock()
 	connection, ok := r.Connections[connectionId]
@@ -197,10 +213,12 @@ func (r *Room) Disconnect(connectionId string) {
 	r.LastActivity = time.Now()
 }
 
+// On subscribes an event handler to a specific event name within the room.
 func (r *Room) On(event string, handler pubsub.EventHandler) {
 	r.pubsub.Subscribe(event, handler)
 }
 
+// Emit broadcasts an event to all connections in the room.
 func (r *Room) Emit(event string, payload interface{}) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
@@ -220,6 +238,7 @@ func (r *Room) Emit(event string, payload interface{}) {
 	}
 }
 
+// EmitTo broadcasts an event to a specific connection within the room.
 func (r *Room) EmitTo(connectionId string, event string, payload interface{}) {
 	r.mutex.Lock()
 	conn, ok := r.Connections[connectionId]
@@ -242,12 +261,14 @@ func (r *Room) EmitTo(connectionId string, event string, payload interface{}) {
 	conn.Send(jsonMessage)
 }
 
+// IsInactive checks if the room is inactive and should be disposed of.
 func (r *Room) IsInactive() bool {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	return len(r.Connections) == 0 && (r.AutoDispose > 0 && time.Since(r.LastActivity) > time.Duration(r.AutoDispose)*time.Second)
 }
 
+// Disposes of the room and cleans up all resources.
 func (r *Room) Dispose() {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
