@@ -4,17 +4,22 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/netnex-io/nexus/error"
 	"github.com/netnex-io/nexus/pubsub"
 	"github.com/netnex-io/nexus/room/messages"
 )
 
 type Room struct {
-	Id          string
-	RoomType    string
-	Connections map[string]*Connection
-	mutex       sync.Mutex
+	Id              string
+	RoomType        string
+	Connections     map[string]*Connection
+	ConnectionLimit int
+	AutoDispose     int // Auto dispose timeout in seconds, 0 for no timeout
+	LastActivity    time.Time
+	mutex           sync.Mutex
 
 	// Messages is in charge of direct bidirectional communication, handling connection managers when a client joins/leaves the room
 	messages chan RoomMessage
@@ -24,6 +29,9 @@ type Room struct {
 	OnJoin    func(c *Connection)
 	OnLeave   func(c *Connection)
 	OnMessage func(c *Connection, message []byte)
+
+	disposeChan chan struct{}
+	disposed    bool
 }
 
 type Connection struct {
@@ -40,11 +48,13 @@ func (c *Connection) Send(message []byte) {
 
 func NewRoom(id string, roomType string) *Room {
 	r := &Room{
-		Id:          id,
-		RoomType:    roomType,
-		Connections: make(map[string]*Connection),
-		messages:    make(chan RoomMessage),
-		pubsub:      pubsub.NewPubSub(),
+		Id:           id,
+		RoomType:     roomType,
+		Connections:  make(map[string]*Connection),
+		messages:     make(chan RoomMessage),
+		pubsub:       pubsub.NewPubSub(),
+		LastActivity: time.Now(),
+		disposeChan:  make(chan struct{}),
 	}
 
 	go r.run()
@@ -52,17 +62,30 @@ func NewRoom(id string, roomType string) *Room {
 }
 
 func (r *Room) run() {
-	for msg := range r.messages {
-		switch m := msg.(type) {
-		case *messages.ConnectionMessage:
-			r.handleConnectionMessage(m.ConnectionId, m.Message)
-		case *messages.Disconnect:
-			r.Disconnect(m.ConnectionId)
+	for {
+		select {
+		case msg, ok := <-r.messages:
+			if !ok {
+				return
+			}
+			switch m := msg.(type) {
+			case *messages.ConnectionMessage:
+				r.handleConnectionMessage(m.ConnectionId, m.Message)
+			case *messages.Disconnect:
+				r.Disconnect(m.ConnectionId)
+			}
+		case <-r.disposeChan:
+			return
 		}
 	}
 }
 
 func (r *Room) AddConnection(conn *websocket.Conn, connectionId string) {
+	if r.ConnectionLimit > 0 && len(r.Connections) >= r.ConnectionLimit {
+		error.SendErrorResponse(conn, error.NewErrorResponse(error.RoomFull, "Room is full"))
+		return
+	}
+
 	connection := &Connection{
 		Id:         connectionId,
 		Connection: conn,
@@ -74,6 +97,7 @@ func (r *Room) AddConnection(conn *websocket.Conn, connectionId string) {
 	r.mutex.Lock()
 	r.Connections[connectionId] = connection
 	r.mutex.Unlock()
+	r.LastActivity = time.Now()
 
 	go r.readMessages(connection)
 	go r.writeMessages(connection)
@@ -154,14 +178,23 @@ func (r *Room) Disconnect(connectionId string) {
 	r.mutex.Lock()
 	connection, ok := r.Connections[connectionId]
 	if ok {
-		delete(r.Connections, connectionId)
+		disconnectMessage := map[string]interface{}{
+			"event":   "nexus:room-leave",
+			"room_id": r.Id,
+		}
+		message, _ := json.Marshal(disconnectMessage)
+		connection.Connection.WriteMessage(websocket.TextMessage, message)
+
 		close(connection.send)
+		delete(r.Connections, connectionId)
 	}
 	r.mutex.Unlock()
 
 	if ok && r.OnLeave != nil {
 		r.OnLeave(connection)
 	}
+
+	r.LastActivity = time.Now()
 }
 
 func (r *Room) On(event string, handler pubsub.EventHandler) {
@@ -207,4 +240,29 @@ func (r *Room) EmitTo(connectionId string, event string, payload interface{}) {
 	}
 
 	conn.Send(jsonMessage)
+}
+
+func (r *Room) IsInactive() bool {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	return len(r.Connections) == 0 && (r.AutoDispose > 0 && time.Since(r.LastActivity) > time.Duration(r.AutoDispose)*time.Second)
+}
+
+func (r *Room) Dispose() {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	if r.disposed {
+		return
+	}
+	r.disposed = true
+
+	for id := range r.Connections {
+		r.Disconnect(id)
+	}
+
+	close(r.messages)
+	close(r.disposeChan)
+
+	log.Printf("Room %s disposed", r.Id)
 }
