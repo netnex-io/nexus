@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"github.com/netnex-io/nexus/error"
 	"github.com/netnex-io/nexus/matchmaker"
 )
 
@@ -80,6 +81,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if s.Config.MaxMessageSize != 0 {
 		conn.SetReadLimit(s.Config.MaxMessageSize)
 	}
+
 	s.connections++
 	defer func() {
 		s.connections--
@@ -88,7 +90,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Limit the number of concurrent connections by server config
 	if s.connections > s.Config.ConnectionLimit && s.Config.ConnectionLimit != 0 {
-		log.Printf("Connection limit exceeded: %v", s.connections)
+		error.SendErrorResponse(conn, error.NewErrorResponse(error.ConnectionLimitError, "Connection limit reached"))
 		conn.Close()
 		return
 	}
