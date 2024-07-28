@@ -1,4 +1,7 @@
-# 🌐 Nexus
+<a href="https://github.com/netnex-io/nexus">
+  <img src="assets/logo.svg" width="50%" />
+</a>
+
 Open source server framework for realtime games & apps.
 
 ### Example
