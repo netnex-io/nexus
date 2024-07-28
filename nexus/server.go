@@ -25,7 +25,7 @@ type ServerConfig struct {
 func DefaultServerConfig() ServerConfig {
 	return ServerConfig{
 		AllowedOrigins:    []string{"*"}, // Allow all origins by default
-		MaxMessageSize:    1024,          // Default max message size (1KB)
+		MaxMessageSize:    0,             // Default max message size (1KB)
 		CertFile:          "",            // Default empty string for CertFile
 		KeyFile:           "",            // Default empty string for KeyFile
 		ConnectionLimit:   0,             // Default unlimited connections
@@ -76,7 +76,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Println("failed to upgrade connection:", err)
 		return
 	}
-	conn.SetReadLimit(s.Config.MaxMessageSize)
+
+	if s.Config.MaxMessageSize != 0 {
+		conn.SetReadLimit(s.Config.MaxMessageSize)
+	}
 	s.connections++
 	defer func() {
 		s.connections--
